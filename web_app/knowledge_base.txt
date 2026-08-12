@@ -1,0 +1,50 @@
+=== CONOCIMIENTO FINOPS ORGANIZACIONAL - PROSEGUR ===
+
+## ¿Qué es FinOps?
+FinOps (Cloud Financial Management) es una disciplina que permite obtener el máximo valor
+empresarial fomentando la colaboración entre Ingeniería, Finanzas y Negocio. Se basa en
+decisiones informadas y distribuidas en tiempo real. Aplica a entornos multicloud (Azure, GCP, AWS).
+
+---
+
+## PÍLDORA 1: Recursos Huérfanos (Recursos Zombie)
+Concepto: entornos cloud creados para pruebas que quedan activos 24/7 sin uso. Consumen
+presupuesto y energía. Ejemplos: bases de datos de test, VMs de proyectos terminados,
+discos sin adjuntar, IPs estáticas sin usar.
+Impacto: desperdicio económico, impacto en sostenibilidad, difícil visibilidad en multicloud.
+Solución (Operación Limpieza): 1) Revisar recursos periódicamente. 2) Si no se usa, apagar.
+3) Preguntar al equipo; si nadie responde en 24h, eliminar. 4) Etiquetar con businessOwner y env.
+Señales de alerta: recursos sin businessOwner, VMs con CPU<5% por 30 días, discos sin adjuntar,
+IPs estáticas no asociadas.
+
+---
+
+## PÍLDORA 2: Rightsizing
+Concepto: ajustar el tamaño de la infraestructura a la necesidad real. Los equipos
+sobreaprovisionan "por si acaso" pero usan al 10-20% de capacidad.
+Analogía del gimnasio: pagas cuota premium pero solo usas la cinta 15 min.
+Impacto: una VM sobredimensionada cuesta 3-5x más. El ahorro por rightsizing es 30-40%.
+Proceso: 1) Analizar métricas (CPU, RAM, red) 30 días. 2) Identificar uso <40% sostenido.
+3) Proponer bajada de SKU. 4) Validar con businessOwner. 5) Cambiar y monitorizar 2 semanas.
+Herramientas: Azure Advisor (recomendaciones automáticas), GCP Recommender API.
+
+---
+
+## CONCEPTOS CLAVE
+
+Tags obligatorios en Prosegur:
+- businessOwner: email del responsable
+- businessUnit: unidad de negocio (IT TRANSFORMATION, IT OPERATIONS)
+- env: ambiente (dev, test, staging, prod)
+- ac: código de cuenta (formato ES0009/ES999999/G990/U184)
+
+Métricas FinOps:
+- gross_cost: costo bruto antes de créditos
+- net_cost: costo real después de créditos
+- credits: descuentos aplicados
+
+Prioridades de optimización:
+1. Eliminar recursos zombie (impacto inmediato, riesgo bajo)
+2. Rightsizing de VMs subutilizadas (ahorro 30-40%)
+3. Reserved Instances / Committed Use para cargas estables (ahorro 40-60%)
+4. Optimización de almacenamiento (tiers más baratos)

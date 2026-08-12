@@ -1,0 +1,13 @@
+web_app/.streamlit/secrets.toml
+.azure_client_id.txt
+.azure_client_secret.txt
+.azure_subscription_id.txt
+.azure_tenant_id.txt
+.env
+.env.*
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.log

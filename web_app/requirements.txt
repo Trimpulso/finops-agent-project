@@ -1,0 +1,13 @@
+streamlit>=1.28.0
+google-cloud-bigquery>=3.13.0
+google-auth>=2.25.0
+google-generativeai>=0.3.0
+pandas>=2.0.0
+requests>=2.31.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.2.0
+google-cloud-storage>=2.10.0
+google-cloud-container>=2.0.0
+google-api-python-client>=1.13.0
+
+db-dtypes>=1.1.1

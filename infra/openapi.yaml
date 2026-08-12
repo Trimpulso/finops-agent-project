@@ -1,0 +1,12 @@
+openapi: 3.0.0
+info:
+  title: FinOps Spend Tool
+  version: 1.0.0
+paths:
+  /:
+    get:
+      summary: Obtiene el gasto de ayer
+      operationId: get_daily_spend
+      responses:
+        '200':
+          description: Resumen de gastos exitoso
