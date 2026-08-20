@@ -6,7 +6,10 @@ warnings.filterwarnings("ignore", category=UserWarning, module="google.cloud.big
 import json
 import os
 import re
+import smtplib
 from datetime import UTC, datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 import google.auth
 import google.generativeai as genai
@@ -58,6 +61,52 @@ def _get_setting(name: str, required: bool = True) -> str | None:
     if required:
         raise KeyError(f"Falta la configuracion requerida: {name}")
     return None
+
+
+def send_email_smtp(to_address: str, subject: str, body: str) -> tuple[bool, str]:
+    try:
+        to_address = (to_address or "").strip()
+        if not to_address:
+            return False, "Debes indicar un correo destino."
+
+        gmail_address = _get_setting("GMAIL_ADDRESS", required=False)
+        gmail_password = _get_setting("GMAIL_APP_PASSWORD", required=False)
+        if not gmail_address or not gmail_password:
+            return False, "Falta configurar GMAIL_ADDRESS / GMAIL_APP_PASSWORD en el servicio."
+
+        msg = MIMEMultipart()
+        msg["From"] = gmail_address
+        msg["To"] = to_address
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+            server.starttls()
+            server.login(gmail_address, gmail_password)
+            server.sendmail(gmail_address, [to_address], msg.as_string())
+
+        return True, f"Correo enviado a {to_address}."
+    except Exception as e:
+        return False, f"No se pudo enviar el correo: {e}"
+
+
+def render_email_button(message_index: int, content: str) -> None:
+    with st.expander("Enviar por correo"):
+        to_address = st.text_input(
+            "Correo destino",
+            key=f"email_to_{message_index}",
+            placeholder="destinatario@ejemplo.com",
+        )
+        if st.button("Enviar por correo", key=f"email_send_{message_index}"):
+            ok, info = send_email_smtp(
+                to_address,
+                subject="Respuesta FinOps Chat Agent",
+                body=content,
+            )
+            if ok:
+                st.success(info)
+            else:
+                st.error(info)
 
 
 try:
@@ -955,9 +1004,11 @@ else:
     ):
         st.session_state.messages[0]["content"] = WELCOME_MESSAGE
 
-for message in st.session_state.messages:
+for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if message["role"] == "assistant":
+            render_email_button(idx, message["content"])
 
 if prompt := st.chat_input("Your message"):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -972,6 +1023,7 @@ if prompt := st.chat_input("Your message"):
                 st.caption(f"Respondido con: {used_model}")
                 st.session_state.messages.append({"role": "assistant", "content": final_response})
                 log_conversation(prompt, final_response, used_model)
+                render_email_button(len(st.session_state.messages) - 1, final_response)
             except ResourceExhausted:
                 msg = "Se agoto la cuota diaria de modelos gratuitos. Intenta mas tarde o usa paid tier."
                 st.error(msg)
