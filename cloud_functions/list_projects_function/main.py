@@ -1,4 +1,5 @@
 import functions_framework
+import json
 from google.cloud import bigquery
 
 PROJECT_ID = "project-5f47ed36-9aec-4f46-a30"
@@ -29,8 +30,8 @@ def list_projects(request):
         
         # Si no se encuentran proyectos, devolvemos una lista vacía
         # en lugar de un error.
-        return ({"project_ids": project_ids}, 200, headers)
+        return (json.dumps({"project_ids": project_ids}, ensure_ascii=False), 200, headers)
 
     except Exception as e:
         print(f"Error: {e}")
-        return ({"error": str(e)}, 500, headers)
+        return (json.dumps({"error": str(e)}, ensure_ascii=False), 500, headers)

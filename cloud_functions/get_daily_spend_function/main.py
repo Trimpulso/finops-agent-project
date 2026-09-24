@@ -1,4 +1,5 @@
 import functions_framework
+import json
 from google.cloud import bigquery
 
 PROJECT_ID = "project-5f47ed36-9aec-4f46-a30"
@@ -18,18 +19,21 @@ def get_daily_spend(request):
     try:
         client = bigquery.Client(project=PROJECT_ID)
         
+        query_parameters = []
         project_id_filter = ""
         request_json = request.get_json(silent=True)
         if request_json and 'project_id' in request_json:
             project_id = request_json['project_id']
-            project_id_filter = f"AND project.id = '{project_id}'"
+            project_id_filter = "AND project.id = @project_id"
+            query_parameters.append(bigquery.ScalarQueryParameter("project_id", "STRING", project_id))
 
         query = f"""
             SELECT SUM(cost) as total_cost
             FROM `{PROJECT_ID}.{DATASET_NAME}.{TABLE_NAME}`
             WHERE TRUE {project_id_filter}
         """
-        query_job = client.query(query)
+        job_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
+        query_job = client.query(query, job_config=job_config)
         rows = query_job.result()
         
         total_cost = 0
@@ -38,8 +42,8 @@ def get_daily_spend(request):
             total_cost = row.total_cost if row.total_cost is not None else 0
             break 
         
-        return ({"total_cost": total_cost}, 200, headers)
+        return (json.dumps({"total_cost": float(total_cost)}, ensure_ascii=False), 200, headers)
 
     except Exception as e:
         print(f"Error: {e}")
-        return ({"error": str(e)}, 500, headers)
+        return (json.dumps({"error": str(e)}, ensure_ascii=False), 500, headers)

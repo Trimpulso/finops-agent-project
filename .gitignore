@@ -1,13 +1,36 @@
 web_app/.streamlit/secrets.toml
 .azure_client_id.txt
+*secret*
+*secrets*
+service.yaml
+.azure_client_id.txt
 .azure_client_secret.txt
 .azure_subscription_id.txt
 .azure_tenant_id.txt
+.gmail_address.txt
+.gmail_app_password.txt
 .env
 .env.*
+*.7z
 venv/
 .venv/
 __pycache__/
 *.pyc
 *.pyo
 *.log
+
+# Credenciales y variables locales
+credenciales.env
+web_app/credenciales.env
+*.env
+*.env.*
+!.env.example
+
+# Archivos locales, diagnósticos y respaldos
+*.backup
+*.bak
+*.bak_*
+*-error.txt
+*audit*.txt
+installed-packages-backup.txt
+puestas del chat*

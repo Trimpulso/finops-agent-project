@@ -8,7 +8,6 @@ COPY web_app/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY web_app/ .
-COPY consultas-tags/ /app/consultas-tags/
 
 EXPOSE 8080
 
@@ -19,3 +18,4 @@ ENV STREAMLIT_SERVER_HEADLESS=true
 HEALTHCHECK CMD curl --fail http://localhost:8080/_stcore/health
 
 CMD ["streamlit", "run", "app.py", "--server.port=8080", "--server.address=0.0.0.0"]
+

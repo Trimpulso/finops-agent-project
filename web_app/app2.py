@@ -1,3 +1,67 @@
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
+warnings.filterwarnings("ignore", category=UserWarning, module="google.cloud.bigquery.table")
+
+import json
+import os
+import re
+import smtplib
+from datetime import UTC, datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+import google.auth
+import google.generativeai as genai
+import requests
+import streamlit as st
+from google.api_core.exceptions import ResourceExhausted
+from google.cloud import bigquery
+
+# =========================
+# Config base
+# =========================
+DEFAULT_PROJECT_ID = "project-5f47ed36-9aec-4f46-a30"
+BILLING_TABLE = "project-5f47ed36-9aec-4f46-a30.billing_export.gcp_billing_export_v1_011B52_EC7045_1117AB"
+CONVERSATIONS_TABLE = "project-5f47ed36-9aec-4f46-a30.finops_agent.conversations"
+DEFAULT_DAYS = 30
+MODEL_NAMES = ["gemini-3.5-flash","gemini-3.5-flash-lite","gemini-3.0-flash","gemini-3.0-flash-lite","gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"]
+_CREDITS_EXPR = "IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)"
+
+_REQUIRED_TAGS = ["businessOwner", "env"]
+_VALID_ENVS = ["dev", "test", "staging", "prod", "development", "production"]
+
+POWERBI_API_BASE = "https://api.powerbi.com/v1.0/myorg"
+DEFAULT_POWERBI_WORKSPACE_ID = os.environ.get("POWERBI_WORKSPACE_ID", "").strip()
+
+st.set_page_config(page_title="FinOps Chat Agent", layout="centered")
+st.title("FinOps Chat Agent")
+st.caption("Agente para costos GCP/Azure y consultas de tags")
+
+_KB_PATH = os.path.join(os.path.dirname(__file__), "knowledge_base.txt")
+if os.path.exists(_KB_PATH):
+    with open(_KB_PATH, "r", encoding="utf-8") as f:
+        FINOPS_KNOWLEDGE = f.read()
+else:
+    FINOPS_KNOWLEDGE = ""
+
+
+def _get_setting(name: str, required: bool = True) -> str | None:
+    value = os.environ.get(name)
+    if value and str(value).strip():
+        return str(value).strip()
+
+    try:
+        value = st.secrets[name]
+        if value and str(value).strip():
+            return str(value).strip()
+    except Exception:
+        pass
+
+    if required:
+        raise KeyError(f"Falta la configuracion requerida: {name}")
+    return None
+
 
 def send_email_smtp(to_address: str, subject: str, body: str) -> tuple[bool, str]:
     try:
@@ -8,7 +72,7 @@ def send_email_smtp(to_address: str, subject: str, body: str) -> tuple[bool, str
         gmail_address = _get_setting("GMAIL_ADDRESS", required=False)
         gmail_password = _get_setting("GMAIL_APP_PASSWORD", required=False)
         if not gmail_address or not gmail_password:
-            return False, "Falta configurar GMAIL_ADDRESS / GMAIL_APP_PASSWORD en credenciales.env."
+            return False, "Falta configurar GMAIL_ADDRESS / GMAIL_APP_PASSWORD en el servicio."
 
         msg = MIMEMultipart()
         msg["From"] = gmail_address
@@ -25,8 +89,9 @@ def send_email_smtp(to_address: str, subject: str, body: str) -> tuple[bool, str
     except Exception as e:
         return False, f"No se pudo enviar el correo: {e}"
 
+
 def render_email_button(message_index: int, content: str) -> None:
-    with st.expander("📧 Enviar esta respuesta por correo"):
+    with st.expander("Enviar por correo"):
         to_address = st.text_input(
             "Correo destino",
             key=f"email_to_{message_index}",
@@ -43,285 +108,12 @@ def render_email_button(message_index: int, content: str) -> None:
             else:
                 st.error(info)
 
-import warnings
-warnings.filterwarnings("ignore")
-
-import json
-import os
-import re
-import smtplib
-import time
-from datetime import UTC, datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from pathlib import Path
 
 try:
-    import boto3
-except ImportError:
-    boto3 = None
-
-import google.auth
-import requests
-import streamlit as st
-try:
-    from streamlit_mic_recorder import mic_recorder
-except ImportError:
-    mic_recorder = None
-try:
-    from speech_recognition import AudioData, Recognizer, RequestError, UnknownValueError
-except ImportError:
-    AudioData = Recognizer = RequestError = UnknownValueError = None
-from google.api_core.exceptions import ResourceExhausted
-from google.cloud import bigquery
-
-DEFAULT_DAYS = 30
-
-def _load_credenciales_env():
-    possible_paths = [
-        Path(__file__).resolve().parent.parent / "credenciales.env",
-        Path(__file__).resolve().parent / "credenciales.env",
-        Path(__file__).resolve().parent.parent / ".env",
-        Path(__file__).resolve().parent / ".env",
-    ]
-    for env_path in possible_paths:
-        if env_path.exists():
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        k, v = k.strip(), v.strip().strip("'").strip('"')
-                        if k and not os.environ.get(k):
-                            os.environ[k] = v
-            break
-
-_load_credenciales_env()
-
-def _get_setting(name: str, required: bool = True) -> str | None:
-    value = os.environ.get(name)
-    if value and str(value).strip():
-        return str(value).strip().lstrip("\ufeff").strip()
-    try:
-        value = st.secrets[name]
-        if value and str(value).strip():
-            return str(value).strip().lstrip("\ufeff").strip()
-    except Exception:
-        pass
-    if required:
-        st.warning(f"Falta configurar: `{name}`")
-    return None
-
-# ==========================================
-# CONECTOR NATIVO AWS (EC2, RDS, Lambda)
-# ==========================================
-def _get_boto3_session():
-    if not boto3:
-        return None
-    ak = _get_setting("AWS_ACCESS_KEY_ID", required=False) or os.environ.get("AWS_ACCESS_KEY_ID")
-    sk = _get_setting("AWS_SECRET_ACCESS_KEY", required=False) or os.environ.get("AWS_SECRET_ACCESS_KEY")
-    reg = _get_setting("AWS_DEFAULT_REGION", required=False) or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
-    
-    if ak and sk:
-        return boto3.Session(
-            aws_access_key_id=ak.strip(),
-            aws_secret_access_key=sk.strip(),
-            region_name=reg.strip()
-        )
-    return boto3.Session(region_name=reg)
-
-def get_aws_resources_summary() -> dict:
-    if not boto3:
-        return {"status": "error", "message": "boto3 no está instalado en el entorno"}
-    try:
-        session = _get_boto3_session()
-        ec2 = session.client('ec2')
-        rds = session.client('rds')
-        lam = session.client('lambda')
-        reporte = []
-
-        # EC2
-        res_ec2 = ec2.describe_instances()
-        for res in res_ec2.get('Reservations', []):
-            for inst in res.get('Instances', []):
-                name_tag = next((t['Value'] for t in inst.get('Tags', []) if t['Key'] == 'Name'), inst['InstanceId'])
-                reporte.append({
-                    "Servicio": "EC2",
-                    "Recurso": f"{name_tag} ({inst['InstanceId']})",
-                    "Estado": inst['State']['Name'],
-                    "Tipo": inst['InstanceType']
-                })
-
-        # RDS
-        res_rds = rds.describe_db_instances()
-        for db in res_rds.get('DBInstances', []):
-            reporte.append({
-                "Servicio": "RDS",
-                "Recurso": db['DBInstanceIdentifier'],
-                "Estado": db['DBInstanceStatus'],
-                "Tipo": db['DBInstanceClass']
-            })
-
-        # Lambda
-        res_lam = lam.list_functions()
-        for fn in res_lam.get('Functions', []):
-            reporte.append({
-                "Servicio": "Lambda",
-                "Recurso": fn['FunctionName'],
-                "Estado": "Activa",
-                "Tipo": f"{fn.get('Runtime', 'Serverless')} ({fn.get('MemorySize', 128)}MB)"
-            })
-
-        return {"status": "ok", "total_recursos": len(reporte), "recursos": reporte}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-def get_aws_cost_summary(days: int = DEFAULT_DAYS) -> dict:
-    if not boto3:
-        return {"status": "error", "message": "boto3 no está instalado en el entorno"}
-    try:
-        session = _get_boto3_session()
-        client = session.client("ce", region_name="us-east-1")
-        end_date = datetime.now(UTC).date()
-        start_date = end_date - timedelta(days=max(1, int(days)))
-        result = client.get_cost_and_usage(
-            TimePeriod={"Start": start_date.isoformat(), "End": end_date.isoformat()},
-            Granularity="MONTHLY",
-            Metrics=["UnblendedCost"],
-            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
-        )
-        rows = []
-        for period in result.get("ResultsByTime", []):
-            for group in period.get("Groups", []):
-                amount = float(group.get("Metrics", {}).get("UnblendedCost", {}).get("Amount", 0) or 0)
-                if amount:
-                    rows.append({"service": group.get("Keys", ["Unknown"])[0], "cost": amount, "currency": "USD"})
-        return {"status": "ok", "days": days, "rows": rows, "total": sum(row["cost"] for row in rows)}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-# =========================
-# Config base
-# =========================
-DEFAULT_PROJECT_ID = "project-5f47ed36-9aec-4f46-a30"
-BILLING_TABLE = "project-5f47ed36-9aec-4f46-a30.billing_export.gcp_billing_export_v1_011B52_EC7045_1117AB"
-CONVERSATIONS_TABLE = "project-5f47ed36-9aec-4f46-a30.finops_agent.conversations"
-MODEL_NAMES = ["gemini-3.5-flash","gemini-3.5-flash-lite","gemini-3.0-flash","gemini-3.0-flash-lite","gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"]
-_CREDITS_EXPR = "IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)"
-
-_REQUIRED_TAGS = ["businessOwner", "env"]
-_VALID_ENVS = ["dev", "test", "staging", "prod", "development", "production"]
-
-POWERBI_API_BASE = "https://api.powerbi.com/v1.0/myorg"
-
-# GCP Infrastructure
-try:
-    _, DEFAULT_GCP_PROJECT = google.auth.default()
-except:
-    DEFAULT_GCP_PROJECT = "project-5f47ed36-9aec-4f46-a30"
-DEFAULT_POWERBI_WORKSPACE_ID = os.environ.get("POWERBI_WORKSPACE_ID", "").strip()
-
-st.set_page_config(page_title="FinOps Chat Agent", layout="centered")
-st.title("FinOps Chat Agent")
-st.caption("Agente para costos GCP/Azure y consultas de tags")
-
-# ==========================================================
-# CENTRO DE MANDO: PESTAÑAS FINOPS PRINCIPALES
-# ==========================================================
-tab_chat, tab_gcp, tab_azure, tab_powerbi, tab_tags, tab_pildoras, tab_aws = st.tabs([
-    "💬 Chat FinOps",
-    "☁️ GCP (BigQuery)",
-    "🔷 Azure (Cost)",
-    "📊 Power BI",
-    "🏷️ Auditoría Tags",
-    "💡 Píldoras FinOps",
-    "🟧 AWS Cloud"
-])
-
-
-def queue_chat_prompt(prompt: str) -> None:
-    st.session_state.pending_prompt = prompt
-    st.rerun()
-
-with tab_gcp:
-    st.subheader("☁️ Consultas directas GCP")
-    st.markdown(
-        "Hola, soy tu FinOps Chat Agent.\n\n"
-        "Puedo ayudarte con:\n\n"
-        "- Costos en GCP (resumen, detalle y tendencias).\n"
-        "- Reportes de GCP (inventario, paginas, dataset y resumen ejecutivo).\n"
-        "- Gobernanza de tags en GCP (recursos sin tags y validacion).\n"
-        "- Recomendaciones FinOps para GCP (variaciones, optimizacion y acciones)."
-    )
-
-with tab_azure:
-    st.subheader("☁️ Consultas directas AZURE")
-    st.markdown(
-        "Hola, soy tu FinOps Chat Agent.\n\n"
-        "Puedo ayudarte con:\n\n"
-        "- Costos en AZURE (resumen, detalle y tendencias).\n"
-        "- Reportes de AZURE (inventario, paginas, dataset y resumen ejecutivo).\n"
-        "- Gobernanza de tags en AZURE (recursos sin tags y validacion).\n"
-        "- Recomendaciones FinOps para AZURE (variaciones, optimizacion y acciones)."
-    )
-
-with tab_powerbi:
-    st.subheader("📊 Reportes y Datasets Power BI")
-    st.markdown(
-        "**Pruebas rapidas:**\n\n"
-        "1. lista reportes de power bi\n"
-        "2. que paginas tiene el reporte FinOps GCP - Gasto Tenant\n"
-        "3. resumen ejecutivo del reporte FinOps GCP - Gasto Tenant\n"
-        "4. top servicios por variacion en el reporte FinOps GCP - Gasto Tenant"
-    )
-
-with tab_tags:
-    st.subheader("🏷️ Auditoría de Tags y Etiquetas")
-
-with tab_pildoras:
-    st.subheader("💡 Píldoras y Mejores Prácticas")
-
-with tab_aws:
-    st.subheader("🟧 AWS Cloud (Recursos Reales)")
-
-# Sidebar Diagnóstico
-with st.sidebar.expander("🔍 Diagnóstico de Conexiones", expanded=False):
-    def _chk(name):
-        return "✅ Listo" if _get_setting(name, required=False) else "❌ Falta"
-    st.write(f"Gemini API: {_chk('GEMINI_API_KEY')}")
-    st.write(f"Azure Secret: {_chk('AZURE_CLIENT_SECRET')}")
-    st.write(f"Power BI Secret: {_chk('POWERBI_CLIENT_SECRET')}")
-    st.write(f"AWS Key: {_chk('AWS_ACCESS_KEY_ID')}")
-    st.write(f"Gmail SMTP: {_chk('GMAIL_APP_PASSWORD')}")
-
-
-_KB_PATH = os.path.join(os.path.dirname(__file__), "knowledge_base.txt")
-if os.path.exists(_KB_PATH):
-    with open(_KB_PATH, "r", encoding="utf-8") as f:
-        FINOPS_KNOWLEDGE = f.read()
-else:
-    FINOPS_KNOWLEDGE = ""
-
-
-def _get_setting(name: str, required: bool = True) -> str | None:
-    value = os.environ.get(name)
-    if value and str(value).strip():
-        return str(value).strip().lstrip("\ufeff").strip()
-
-    try:
-        value = st.secrets[name]
-        if value and str(value).strip():
-            return str(value).strip().lstrip("\ufeff").strip()
-    except Exception:
-        pass
-
-    if required:
-        raise KeyError(f"Falta la configuracion requerida: {name}")
-    return None
-
-
-# Gemini se configura al momento de usar (REST API, no SDK)
+    genai.configure(api_key=_get_setting("GEMINI_API_KEY"))
+except Exception as e:
+    st.error(f"No se pudo configurar Gemini: {e}")
+    st.stop()
 
 
 def _bq_client() -> bigquery.Client:
@@ -380,12 +172,7 @@ def _get_azure_access_token() -> str:
     try:
         response.raise_for_status()
     except requests.HTTPError:
-        if response.status_code == 400 and "AADSTS700016" in response.text:
-            raise RuntimeError(
-                "La aplicación registrada de Azure no existe en el tenant configurado. "
-                "Revisa AZURE_CLIENT_ID y AZURE_TENANT_ID."
-            )
-        raise RuntimeError(f"Azure token request failed ({response.status_code}).")
+        raise RuntimeError(f"Azure token request failed ({response.status_code}): {response.text[:1500]}")
 
     payload = response.json()
     token = payload.get("access_token")
@@ -621,67 +408,6 @@ def get_azure_daily_trend_for_service(service_name: str, days: int = DEFAULT_DAY
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@st.cache_data(ttl=3600)
-def get_azure_cost_detail(days: int = DEFAULT_DAYS) -> str:
-    try:
-        start_date, end_date = _azure_date_range(days)
-        payload = {
-            "type": "ActualCost",
-            "timeframe": "Custom",
-            "timePeriod": {"from": start_date, "to": end_date},
-            "dataset": {
-                "granularity": "None",
-                "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
-                "grouping": [
-                    {"type": "Dimension", "name": "ServiceName"},
-                    {"type": "Dimension", "name": "Meter"},
-                ],
-                "sorting": [{"direction": "descending", "name": "Cost"}],
-            },
-        }
-        records = _azure_records(_run_azure_cost_query(payload))
-        normalized = [
-            {
-                "service": r.get("ServiceName", "Unknown"),
-                "meter": r.get("Meter", "Unknown"),
-                "total_cost": _azure_cost_value(r),
-                "currency": r.get("Currency", "USD"),
-            }
-            for r in records
-        ]
-        return json.dumps(normalized, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@st.cache_data(ttl=3600)
-def get_azure_daily_trend(days: int = DEFAULT_DAYS) -> str:
-    try:
-        start_date, end_date = _azure_date_range(days)
-        payload = {
-            "type": "ActualCost",
-            "timeframe": "Custom",
-            "timePeriod": {"from": start_date, "to": end_date},
-            "dataset": {
-                "granularity": "Daily",
-                "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
-                "sorting": [{"direction": "ascending", "name": "UsageDate"}],
-            },
-        }
-        records = _azure_records(_run_azure_cost_query(payload))
-        normalized = [
-            {
-                "cost_date": _normalize_azure_date(r.get("UsageDate")),
-                "daily_cost": _azure_cost_value(r),
-                "currency": r.get("Currency", "USD"),
-            }
-            for r in records
-        ]
-        return json.dumps(normalized, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
 def get_azure_resources_without_tags(resource_group: str | None = None) -> str:
     try:
         subscription_id = _get_setting("AZURE_SUBSCRIPTION_ID")
@@ -821,12 +547,7 @@ def _get_powerbi_access_token() -> str:
         response.raise_for_status()
     except requests.HTTPError:
         # sin esto solo veriamos "400 Client Error: Bad Request", no la razon real de Azure AD
-        if response.status_code == 400 and "AADSTS700016" in response.text:
-            raise RuntimeError(
-                "La aplicación registrada de Power BI no existe en el tenant configurado. "
-                "Revisa POWERBI_CLIENT_ID y POWERBI_TENANT_ID."
-            )
-        raise RuntimeError(f"Power BI token request failed ({response.status_code}).")
+        raise RuntimeError(f"Power BI token request failed ({response.status_code}): {response.text[:1500]}")
 
     payload = response.json()
     token = payload.get("access_token")
@@ -1099,22 +820,10 @@ def execute_powerbi_dax_query_for_report(report_ref: str, dax_query: str, worksp
 
 
 SYSTEM_INSTRUCTION = (
-    "Eres un agente FinOps multicloud. Respeta estrictamente la fuente indicada por el usuario: "
-    "si menciona GCP, responde solo sobre GCP y sus consumos; si menciona Azure, responde solo sobre Azure; "
-    "si menciona AWS, responde solo sobre AWS. No presentes Power BI como fuente ni recomendacion en consultas cloud. "
-    "Solo usa Power BI cuando el usuario mencione Power BI, reporte, reportes, pagina o dataset. "
-    "Si no hay datos o una integracion disponible, dilo claramente y no inventes cifras. "
-    "Responde en espanol claro, accionable y con foco en costos."
-)
-
-INTENT_CLASSIFIER_INSTRUCTION = (
-    "Eres el planificador de un agente FinOps multicloud. "
-    "Analiza la pregunta y devuelve SOLO JSON válido, sin markdown, con esta forma: "
-    '{"clouds": ["gcp|azure|aws|powerbi"], "intent": "summary|detail|trend|resources|tags|optimization|report_inventory|report_pages|report_dataset|general", "days": 30, "service": null, "needs_powerbi": false}. '
-    "Incluye todas las nubes mencionadas. Usa powerbi solo si el usuario pide Power BI, reportes, paginas o datasets. "
-    "Si dice costo, gasto, consumo o precio usa summary; si dice detalle, desglose o SKU usa detail; "
-    "si dice tendencia, diario o evolucion usa trend; si dice recursos, inventario u ociosos usa resources. "
-    "No inventes nubes ni servicios."
+    "Eres un agente FinOps para Azure, GCP y Power BI. "
+    "Si la pregunta trata de reportes de Power BI, consulta inventario, paginas y dataset del reporte. "
+    "Responde en espanol claro, accionable y con foco en costos. "
+    "Cuando uses Power BI, indica workspace, reporte y dataset usados."
 )
 
 TOOLS = [
@@ -1199,374 +908,7 @@ def _format_powerbi_response(raw_json: str) -> str:
     return raw_json
 
 
-def _is_explicit_cloud_query(prompt: str, cloud: str) -> bool:
-    p = prompt.lower()
-    aliases = {
-        "gcp": ["gcp", "google cloud", "google cloud platform"],
-        "azure": ["azure"],
-        "aws": ["aws", "amazon web services"],
-    }
-    return any(alias in p for alias in aliases[cloud])
-
-
-def _format_aws_chat_response(result: dict) -> str:
-    if result.get("status") != "ok":
-        return f"No se pudo consultar AWS: {result.get('message', 'error desconocido')}"
-    resources = result.get("recursos", [])
-    lines = [f"Recursos AWS detectados: {result.get('total_recursos', len(resources))}"]
-    for resource in resources[:20]:
-        lines.append(
-            f"- {resource.get('Servicio')}: {resource.get('Recurso')} | "
-            f"estado: {resource.get('Estado')} | tipo: {resource.get('Tipo')}"
-        )
-    return "\n".join(lines)
-
-
-def _format_aws_cost_response(result: dict) -> str:
-    if result.get("status") != "ok":
-        return f"No se pudo consultar costos AWS: {result.get('message', 'error desconocido')}"
-    lines = [
-        f"Costos AWS de los últimos {result.get('days', DEFAULT_DAYS)} días",
-        f"Total: ${result.get('total', 0):,.2f} USD",
-        "",
-        "Por servicio:",
-    ]
-    rows = sorted(result.get("rows", []), key=lambda row: row["cost"], reverse=True)
-    if not rows:
-        lines.append("- No hay costos registrados en el periodo consultado.")
-    else:
-        for row in rows[:30]:
-            lines.append(f"- {row['service']}: ${row['cost']:,.2f} {row['currency']}")
-    return "\n".join(lines)
-
-
-def _format_azure_cost_response(raw_json: str) -> str:
-    try:
-        data = json.loads(raw_json)
-    except Exception:
-        return raw_json
-    if isinstance(data, dict) and "error" in data:
-        return f"Error consultando costos Azure: {data.get('error')}"
-    if not isinstance(data, list) or not data:
-        return "No hay datos de costos Azure para el periodo consultado."
-    total = sum(float(item.get("total_cost") or 0) for item in data)
-    lines = ["Resumen de costos Azure (Cost Management)", f"Total: ${total:,.2f}", "", "Por servicio:"]
-    for item in data[:20]:
-        lines.append(f"- {item.get('service', 'Unknown')}: ${float(item.get('total_cost') or 0):,.2f} {item.get('currency', '')}")
-    return "\n".join(lines)
-
-
-def _format_azure_detail_response(raw_json: str) -> str:
-    try:
-        data = json.loads(raw_json)
-    except Exception:
-        return raw_json
-    if isinstance(data, dict) and "error" in data:
-        return f"Error consultando detalle Azure: {data.get('error')}"
-    if not isinstance(data, list) or not data:
-        return "No hay detalle de costos Azure para el periodo consultado."
-    lines = ["Detalle de costos Azure por servicio y medidor:"]
-    for item in data[:50]:
-        lines.append(
-            f"- {item.get('service', 'Unknown')} / {item.get('meter', 'Unknown')}: "
-            f"${float(item.get('total_cost') or 0):,.2f} {item.get('currency', '')}"
-        )
-    return "\n".join(lines)
-
-
-def _format_azure_trend_response(raw_json: str) -> str:
-    try:
-        data = json.loads(raw_json)
-    except Exception:
-        return raw_json
-    if isinstance(data, dict) and "error" in data:
-        return f"Error consultando tendencia Azure: {data.get('error')}"
-    if not isinstance(data, list) or not data:
-        return "No hay datos diarios de Azure para el periodo consultado."
-    lines = ["Tendencia diaria de costos Azure:"]
-    for item in data:
-        lines.append(
-            f"- {item.get('cost_date', '?')}: ${float(item.get('daily_cost') or 0):,.2f} "
-            f"{item.get('currency', '')}"
-        )
-    return "\n".join(lines)
-
-
-def _route_explicit_cloud_query(prompt: str) -> tuple[str, str] | None:
-    p = prompt.lower()
-
-    if _is_explicit_cloud_query(prompt, "gcp"):
-        if any(word in p for word in ["ocioso", "ociosos", "zombie", "sin uso", "idle"]):
-            return get_gcp_idle_resources_real(), "gcp-bigquery"
-        if any(word in p for word in ["tendencia", "diario", "diaria", "evolución", "evolucion"]):
-            return get_gcp_daily_trend_real(), "gcp-bigquery"
-        if any(word in p for word in ["detalle", "desglose", "sku"]):
-            return get_gcp_cost_detail_real(), "gcp-bigquery"
-        if any(word in p for word in ["servicio", "servicios", "top", "desglose", "detalle"]):
-            return get_gcp_top_services_real(), "gcp-bigquery"
-        return get_gcp_cost_summary_real(), "gcp-bigquery"
-
-    if _is_explicit_cloud_query(prompt, "azure"):
-        if any(word in p for word in ["tendencia", "diario", "diaria", "evolución", "evolucion"]):
-            return _format_azure_trend_response(get_azure_daily_trend()), "azure-cost-management"
-        if any(word in p for word in ["detalle", "desglose", "medidor", "meter", "sku"]):
-            return _format_azure_detail_response(get_azure_cost_detail()), "azure-cost-management"
-        return _format_azure_cost_response(get_azure_cost_summary_by_service()), "azure-cost-management"
-
-    if _is_explicit_cloud_query(prompt, "aws"):
-        if any(word in p for word in ["costo", "costos", "gasto", "tendencia", "consumo", "precio", "detalle"]):
-            return _format_aws_cost_response(get_aws_cost_summary()), "aws-cost-explorer"
-        return _format_aws_chat_response(get_aws_resources_summary()), "aws"
-
-    return None
-
-
-def _classify_finops_request(prompt: str) -> dict | None:
-    """Usa Gemini para interpretar la intención antes de elegir herramientas."""
-    try:
-        gemini_key = _get_setting("GEMINI_API_KEY")
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "systemInstruction": {"parts": [{"text": INTENT_CLASSIFIER_INSTRUCTION}]},
-            "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
-        }
-        response = requests.post(
-            url,
-            headers={"Content-Type": "application/json", "x-goog-api-key": gemini_key},
-            json=payload,
-            timeout=20,
-        )
-        response.raise_for_status()
-        text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-        plan = json.loads(text)
-        clouds = [cloud for cloud in plan.get("clouds", []) if cloud in {"gcp", "azure", "aws", "powerbi"}]
-        intent = plan.get("intent", "general")
-        if intent not in {"summary", "detail", "trend", "resources", "tags", "optimization", "report_inventory", "report_pages", "report_dataset", "general"}:
-            intent = "general"
-        return {
-            "clouds": clouds,
-            "intent": intent,
-            "days": max(1, min(int(plan.get("days", 30) or 30), 365)),
-            "service": plan.get("service"),
-            "needs_powerbi": bool(plan.get("needs_powerbi", False)),
-        }
-    except Exception:
-        return None
-
-
-def _execute_finops_plan(prompt: str, plan: dict) -> tuple[str, str] | None:
-    """Ejecuta el plan interpretado y combina resultados de varias fuentes."""
-    intent = plan["intent"]
-    days = plan["days"]
-    clouds = plan["clouds"]
-    results = []
-
-    for cloud in clouds:
-        if cloud == "gcp":
-            if intent == "trend":
-                results.append(("GCP", get_gcp_daily_trend_real(days=days)))
-            elif intent == "detail":
-                results.append(("GCP", get_gcp_cost_detail_real(days=days)))
-            elif intent == "resources":
-                results.append(("GCP", get_gcp_idle_resources_real()))
-            else:
-                results.append(("GCP", get_gcp_cost_summary_real()))
-        elif cloud == "azure":
-            if intent == "trend":
-                results.append(("Azure", _format_azure_trend_response(get_azure_daily_trend(days))))
-            elif intent == "detail":
-                results.append(("Azure", _format_azure_detail_response(get_azure_cost_detail(days))))
-            else:
-                results.append(("Azure", _format_azure_cost_response(get_azure_cost_summary_by_service(days))))
-        elif cloud == "aws":
-            if intent in {"summary", "detail", "trend"}:
-                results.append(("AWS", _format_aws_cost_response(get_aws_cost_summary(days))))
-            else:
-                results.append(("AWS", _format_aws_chat_response(get_aws_resources_summary())))
-
-    if not results:
-        return None
-    if len(results) == 1:
-        return results[0][1], results[0][0].lower()
-    combined = "\n\n".join(f"## {source}\n{result}" for source, result in results)
-    return combined, "multicloud-planner"
-
-
-def _handle_conversational_prompt(prompt: str) -> tuple[str, str] | None:
-    """Responde directamente a mensajes conversacionales básicos."""
-    normalized = re.sub(r"[^a-záéíóúüñ ]", "", prompt.lower()).strip()
-    greetings = {"hola", "holá", "buenas", "buenos dias", "buenas tardes", "buenas noches"}
-    if normalized in greetings:
-        return (
-            "Hola. Soy tu agente FinOps. Puedo consultar costos y consumo de GCP, Azure y AWS, "
-            "revisar tags, analizar tendencias y consultar reportes de Power BI. ¿Qué necesitas revisar?",
-            "conversation",
-        )
-    return None
-
-
-# ==========================================
-# GCP INFRASTRUCTURE QUERIES
-# ==========================================
-
-def get_gcp_top_services_real(project_id: str = None, days: int = 30) -> str:
-    """Obtiene los servicios más costosos desde BigQuery Billing"""
-    try:
-        if not project_id:
-            project_id = DEFAULT_GCP_PROJECT
-        
-        client = _bq_client()
-        start_date = (datetime.now(UTC) - timedelta(days=days)).date()
-        
-        query = f"""
-        SELECT
-            service.description AS service,
-            ROUND(SUM(cost), 2) as gross_cost,
-            ROUND(SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 2) as credits,
-            ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 2) as net_cost,
-        FROM `{BILLING_TABLE}`
-        WHERE project.id = '{project_id}'
-          AND DATE(usage_start_time) >= '{start_date}'
-        GROUP BY service
-        ORDER BY net_cost DESC
-        LIMIT 10
-        """
-        df = client.query(query).to_dataframe()
-        
-        if df.empty:
-            return "❌ No hay datos de costos disponibles."
-        
-        total_cost = df['net_cost'].sum()
-        out = [f"🏆 **Top 10 Servicios de GCP (Últimos {days} días)**"]
-        out.append(f"💰 Total: ${total_cost:,.2f}\n")
-        
-        for i, (_, row) in enumerate(df.iterrows(), 1):
-            pct = (row['net_cost'] / total_cost * 100) if total_cost > 0 else 0
-            out.append(f"{i}. **{row['service']}**: ${row['net_cost']:,.2f} ({pct:.1f}%)")
-        
-        return "\n".join(out)
-    except Exception as e:
-        return f"❌ Error consultando servicios GCP: {str(e)}"
-
-
-def get_gcp_cost_detail_real(project_id: str = None, days: int = 30) -> str:
-    """Desglose de costos GCP por servicio y SKU."""
-    try:
-        if not project_id:
-            project_id = DEFAULT_GCP_PROJECT
-        client = _bq_client()
-        start_date = (datetime.now(UTC) - timedelta(days=days)).date()
-        query = f"""
-        SELECT
-            service.description AS service,
-            sku.description AS sku,
-            ROUND(SUM(cost), 2) AS gross_cost,
-            ROUND(SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 2) AS credits,
-            ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 2) AS net_cost
-        FROM `{BILLING_TABLE}`
-        WHERE project.id = '{project_id}'
-          AND DATE(usage_start_time) >= '{start_date}'
-        GROUP BY service, sku
-        HAVING gross_cost > 0.001
-        ORDER BY net_cost DESC
-        LIMIT 50
-        """
-        df = client.query(query).to_dataframe()
-        if df.empty:
-            return f"No hay detalle de costos GCP para los últimos {days} días."
-        lines = [f"Detalle de costos GCP por servicio y SKU (Últimos {days} días):"]
-        for _, row in df.iterrows():
-            lines.append(
-                f"- {row['service']} / {row['sku']}: bruto ${row['gross_cost']:,.2f} | "
-                f"créditos ${abs(row['credits']):,.2f} | neto ${row['net_cost']:,.2f}"
-            )
-        return "\n".join(lines)
-    except Exception as e:
-        return f"❌ Error consultando detalle GCP: {str(e)}"
-
-def get_gcp_idle_resources_real(project_id: str = None) -> str:
-    """Identifica VMs, discos y IPs ociosas en GCP"""
-    return (
-        "La tabla de Billing Export configurada no contiene inventario de recursos ni métricas de uso. "
-        "Para detectar recursos ociosos GCP necesitamos consultar Compute Engine, Cloud Storage y direcciones "
-        "mediante sus APIs o Cloud Asset Inventory."
-    )
-
-
-def get_gcp_daily_trend_real(project_id: str = None, days: int = 30) -> str:
-    """Muestra la evolución diaria del costo neto GCP."""
-    try:
-        if not project_id:
-            project_id = DEFAULT_GCP_PROJECT
-
-        client = _bq_client()
-        query = f"""
-        SELECT
-            DATE(usage_start_time) AS cost_date,
-            ROUND(SUM(cost), 2) AS gross_cost,
-            ROUND(SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 2) AS credits,
-            ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 2) AS net_cost
-        FROM `{BILLING_TABLE}`
-        WHERE project.id = '{project_id}'
-          AND DATE(usage_start_time) >= DATE_SUB(CURRENT_DATE(), INTERVAL {int(days)} DAY)
-        GROUP BY cost_date
-        ORDER BY cost_date ASC
-        """
-        df = client.query(query).to_dataframe()
-        if df.empty:
-            return f"No hay datos diarios de costos GCP para los últimos {days} días."
-
-        out = [f"📈 **Tendencia diaria de costos GCP (Últimos {days} días)**"]
-        for _, row in df.iterrows():
-            out.append(
-                f"- {row['cost_date']}: bruto ${row['gross_cost']:,.2f} | "
-                f"créditos ${abs(row['credits']):,.2f} | neto ${row['net_cost']:,.2f}"
-            )
-        return "\n".join(out)
-    except Exception as e:
-        return f"❌ Error consultando tendencia GCP: {str(e)}"
-
-def get_gcp_cost_summary_real(project_id: str = None) -> str:
-    """Resumen de costos GCP del mes actual"""
-    try:
-        if not project_id:
-            project_id = DEFAULT_GCP_PROJECT
-        
-        client = _bq_client()
-        
-        query = f"""
-        SELECT
-            ROUND(SUM(cost), 2) as gross_cost,
-            ROUND(SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 2) as credits,
-            ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 2) as net_cost,
-            COUNT(DISTINCT DATE(usage_start_time)) as days_with_costs
-        FROM `{BILLING_TABLE}`
-        WHERE project.id = '{project_id}'
-          AND DATE(usage_start_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
-        """
-        
-        df = client.query(query).to_dataframe()
-        
-        if df.empty or len(df) == 0:
-            return "❌ No hay datos de costos para este mes."
-        
-        row = df.iloc[0]
-        out = ["📊 **Resumen de Costos GCP - Mes Actual**\n"]
-        out.append(f"💰 Costo Bruto: ${row['gross_cost']:,.2f}")
-        out.append(f"🎁 Créditos: ${abs(row['credits']):,.2f}")
-        out.append(f"💳 Costo Neto: ${row['net_cost']:,.2f}")
-        out.append(f"📅 Días con actividad: {int(row['days_with_costs'])}")
-        
-        return "\n".join(out)
-    except Exception as e:
-        return f"❌ Error obteniendo resumen: {str(e)}"
-
 def ask_with_fallback(prompt: str):
-    conversational_response = _handle_conversational_prompt(prompt)
-    if conversational_response:
-        return conversational_response
-
     tag_mode = _is_tag_query(prompt)
     if tag_mode == "without":
         result = get_azure_resources_without_tags()
@@ -1578,17 +920,6 @@ def ask_with_fallback(prompt: str):
         resource_id = m.group(0) if m else prompt
         result = get_azure_resource_tags(resource_id)
         return _format_tags_response(result, "get"), "azure-resource-graph"
-
-    plan = _classify_finops_request(prompt)
-    if plan and plan.get("clouds") and not plan.get("needs_powerbi"):
-        planned_response = _execute_finops_plan(prompt, plan)
-        if planned_response:
-            return planned_response
-
-    if not _is_powerbi_query(prompt):
-        cloud_response = _route_explicit_cloud_query(prompt)
-        if cloud_response:
-            return cloud_response
 
     # Rutas deterministicas Power BI (evita caer al LLM para intents conocidos)
     if _is_powerbi_query(prompt):
@@ -1621,42 +952,26 @@ def ask_with_fallback(prompt: str):
             f"Consulta del usuario: {prompt}"
         )
 
-    gemini_key = _get_setting("GEMINI_API_KEY")
     last_error = None
-    
     for model_name in MODEL_NAMES:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": gemini_key,
-            }
-            payload = {
-                "contents": [{"parts": [{"text": enriched}]}],
-                "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
-            }
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
-            
-            if response.status_code == 401:
-                last_error = Exception("401 Unauthorized - Check API key")
-                st.info(f"Auth error en {model_name}. Probando siguiente...")
-                continue
-            elif response.status_code == 429:
-                last_error = ResourceExhausted("Cuota agotada")
-                st.info(f"Cuota agotada en {model_name}. Probando siguiente modelo...")
-                continue
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            if "candidates" in result and result["candidates"]:
-                text = result["candidates"][0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                if text:
-                    return text, model_name
-            
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                tools=TOOLS,
+                system_instruction=SYSTEM_INSTRUCTION,
+            )
+            chat = model.start_chat(enable_automatic_function_calling=True)
+            response = chat.send_message(enriched)
+            return response.text, model_name
+
+        except ResourceExhausted as e:
+            last_error = e
+            st.info(f"Cuota agotada en {model_name}. Probando siguiente modelo...")
+            continue
+
         except Exception as e:
             last_error = e
-            st.warning(f"Error con {model_name}: {str(e)[:100]}. Probando siguiente...")
+            st.warning(f"Error con {model_name}: {e}. Probando siguiente modelo...")
             continue
 
     if last_error is not None:
@@ -1668,7 +983,15 @@ def ask_with_fallback(prompt: str):
 WELCOME_MESSAGE = (
     "Hola, soy tu FinOps Chat Agent.\n\n"
     "Puedo ayudarte con:\n"
-    "- Recomendaciones FinOps (variaciones, optimizacion, pildoras y acciones)."
+    "- Costos en GCP y Azure (resumen, detalle y tendencias).\n"
+    "- Reportes de Power BI (inventario, paginas, dataset y resumen ejecutivo).\n"
+    "- Gobernanza de tags en Azure (recursos sin tags y validacion).\n"
+    "- Recomendaciones FinOps (variaciones, optimizacion y acciones).\n\n"
+    "Pruebas rapidas:\n"
+    "1) lista reportes de power bi\n"
+    "2) que paginas tiene el reporte FinOps Azure - Gasto Tenant\n"
+    "3) resumen ejecutivo del reporte FinOps Azure - Gasto Tenant\n"
+    "4) top servicios por variacion en el reporte FinOps Azure - Gasto Tenant"
 )
 
 if "messages" not in st.session_state:
@@ -1677,28 +1000,30 @@ else:
     if (
         st.session_state.messages
         and st.session_state.messages[0].get("role") == "assistant"
-        and (
-            "Como puedo ayudarte a analizar y optimizar costos de GCP o Azure" in st.session_state.messages[0].get("content", "")
-            or "Costos en GCP y Azure (resumen, detalle y tendencias)" in st.session_state.messages[0].get("content", "")
-        )
+        and "Como puedo ayudarte a analizar y optimizar costos de GCP o Azure" in st.session_state.messages[0].get("content", "")
     ):
         st.session_state.messages[0]["content"] = WELCOME_MESSAGE
 
+for idx, message in enumerate(st.session_state.messages):
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if message["role"] == "assistant":
+            render_email_button(idx, message["content"])
 
-def process_chat_prompt(prompt: str, source: str = "chat") -> None:
+if prompt := st.chat_input("Your message"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analizando..." if source == "chat" else "Procesando voz..."):
+        with st.spinner("Analizando..."):
             try:
                 final_response, used_model = ask_with_fallback(prompt)
                 st.markdown(final_response)
                 st.caption(f"Respondido con: {used_model}")
                 st.session_state.messages.append({"role": "assistant", "content": final_response})
-                render_email_button(len(st.session_state.messages) - 1, final_response)
                 log_conversation(prompt, final_response, used_model)
+                render_email_button(len(st.session_state.messages) - 1, final_response)
             except ResourceExhausted:
                 msg = "Se agoto la cuota diaria de modelos gratuitos. Intenta mas tarde o usa paid tier."
                 st.error(msg)
@@ -1707,57 +1032,3 @@ def process_chat_prompt(prompt: str, source: str = "chat") -> None:
                 msg = f"Ocurrio un error al procesar la consulta: {e}"
                 st.error(msg)
                 st.session_state.messages.append({"role": "assistant", "content": msg})
-
-
-def transcribe_voice_audio(audio: dict) -> tuple[str | None, str | None]:
-    if not audio or not Recognizer:
-        return None, "El componente de voz no está disponible en esta versión."
-    try:
-        recognizer = Recognizer()
-        audio_data = AudioData(audio["bytes"], audio["sample_rate"], audio["sample_width"])
-        return recognizer.recognize_google(audio_data, language="es-ES"), None
-    except UnknownValueError:
-        return None, "No pude entender el audio. Habla más cerca del micrófono y vuelve a intentarlo."
-    except RequestError as exc:
-        return None, f"El servicio de transcripción no está disponible: {exc}"
-    except Exception as exc:
-        return None, f"No se pudo transcribir el audio: {exc}"
-
-
-with tab_chat:
-    with st.chat_message(st.session_state.messages[0]["role"]):
-        st.markdown(st.session_state.messages[0]["content"])
-        render_email_button(0, st.session_state.messages[0]["content"])
-
-# El mensaje de bienvenida solo se muestra en la pestaña Chat FinOps;
-# el resto del historial (preguntas y respuestas) es global a todas las pestañas.
-for idx, message in enumerate(st.session_state.messages[1:], start=1):
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message["role"] == "assistant":
-            render_email_button(idx, message["content"])
-
-chat_col, voice_col = st.columns([8, 1], vertical_alignment="bottom")
-with chat_col:
-    chat_prompt = st.chat_input("Escribe tu mensaje")
-with voice_col:
-    voice_audio = mic_recorder(
-        start_prompt="🎙️",
-        stop_prompt="⏹️",
-        just_once=True,
-        use_container_width=True,
-        format="wav",
-        key="finops_voice_input_row",
-    ) if mic_recorder else None
-
-voice_prompt, voice_error = transcribe_voice_audio(voice_audio)
-if voice_error:
-    st.warning(voice_error)
-
-pending_prompt = st.session_state.pop("pending_prompt", None)
-prompt = voice_prompt or chat_prompt or pending_prompt
-if prompt:
-    process_chat_prompt(prompt, source="voice" if voice_prompt else "chat")
-
-
-
