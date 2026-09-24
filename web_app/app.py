@@ -260,10 +260,10 @@ with tab_azure:
     st.markdown(
         "Hola, soy tu FinOps Chat Agent.\n\n"
         "Puedo ayudarte con:\n\n"
-        "- Costos en AZURE (resumen, detalle y tendencias).\n"
-        "- Reportes de AZURE (inventario, paginas, dataset y resumen ejecutivo).\n"
-        "- Gobernanza de tags en AZURE (recursos sin tags y validacion).\n"
-        "- Recomendaciones FinOps para AZURE (variaciones, optimizacion y acciones)."
+        "- Costos en Azure (resumen, detalle y tendencias).\n"
+        "- Reportes de Azure (inventario, paginas, dataset y resumen ejecutivo).\n"
+        "- Gobernanza de tags en Azure (recursos sin tags y validacion).\n"
+        "- Recomendaciones FinOps para Azure (variaciones, optimizacion y acciones)."
     )
 
 with tab_powerbi:
