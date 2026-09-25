@@ -64,6 +64,7 @@ except ImportError:
 import google.auth
 import requests
 import streamlit as st
+from file_analysis import ALLOWED_FILE_TYPES, analyze_files
 try:
     from streamlit_mic_recorder import mic_recorder
 except ImportError:
@@ -1693,20 +1694,27 @@ else:
         st.session_state.messages[0]["content"] = WELCOME_MESSAGE
 
 
-def process_chat_prompt(prompt: str, source: str = "chat") -> None:
-    st.session_state.messages.append({"role": "user", "content": prompt})
+def process_chat_prompt(prompt: str, source: str = "chat", files: list | None = None) -> None:
+    files = files or []
+    shown_prompt = prompt + (("\n\n📎 " + ", ".join(f.name for f in files)) if files else "")
+    st.session_state.messages.append({"role": "user", "content": shown_prompt})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(shown_prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analizando..." if source == "chat" else "Procesando voz..."):
+        with st.spinner("Analizando archivos..." if files else ("Analizando..." if source == "chat" else "Procesando voz...")):
             try:
-                final_response, used_model = ask_with_fallback(prompt)
+                if files:
+                    final_response, used_model = analyze_files(
+                        prompt, files, _get_setting("GEMINI_API_KEY"), MODEL_NAMES, SYSTEM_INSTRUCTION
+                    )
+                else:
+                    final_response, used_model = ask_with_fallback(prompt)
                 st.markdown(final_response)
                 st.caption(f"Respondido con: {used_model}")
                 st.session_state.messages.append({"role": "assistant", "content": final_response})
                 render_email_button(len(st.session_state.messages) - 1, final_response)
-                log_conversation(prompt, final_response, used_model)
+                log_conversation(shown_prompt, final_response, used_model)
             except ResourceExhausted:
                 msg = "Se agoto la cuota diaria de modelos gratuitos. Intenta mas tarde o usa paid tier."
                 st.error(msg)
@@ -1747,7 +1755,11 @@ for idx, message in enumerate(st.session_state.messages[1:], start=1):
 
 chat_col, voice_col = st.columns([8, 1], vertical_alignment="bottom")
 with chat_col:
-    chat_prompt = st.chat_input("Escribe tu mensaje")
+    chat_value = st.chat_input(
+        "Escribe tu mensaje o adjunta archivos",
+        accept_file="multiple",
+        file_type=ALLOWED_FILE_TYPES,
+    )
 with voice_col:
     voice_audio = mic_recorder(
         start_prompt="🎙️",
@@ -1763,9 +1775,10 @@ if voice_error:
     st.warning(voice_error)
 
 pending_prompt = st.session_state.pop("pending_prompt", None)
+chat_prompt = chat_value.text if chat_value else None
+chat_files = list(chat_value.files) if chat_value else []
 prompt = voice_prompt or chat_prompt or pending_prompt
-if prompt:
-    process_chat_prompt(prompt, source="voice" if voice_prompt else "chat")
-
+if prompt or chat_files:
+    process_chat_prompt(prompt or "", source="voice" if voice_prompt else "chat", files=chat_files)
 
 
