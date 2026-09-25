@@ -283,7 +283,15 @@ with tab_pildoras:
     st.subheader("💡 Píldoras y Mejores Prácticas")
 
 with tab_aws:
-    st.subheader("🟧 AWS Cloud (Recursos Reales)")
+    st.subheader("☁️ Consultas directas AWS CLOUD")
+    st.markdown(
+        "Hola, soy tu FinOps Chat Agent.\n\n"
+        "Puedo ayudarte con:\n\n"
+        "- Costos en AWS (resumen, detalle y tendencias).\n"
+        "- Reportes de AWS (inventario, paginas, dataset y resumen ejecutivo).\n"
+        "- Gobernanza de tags en AWS (recursos sin tags y validacion).\n"
+        "- Recomendaciones FinOps para AWS (variaciones, optimizacion y acciones)."
+    )
 
 # Sidebar Diagnóstico
 with st.sidebar.expander("🔍 Diagnóstico de Conexiones", expanded=False):
