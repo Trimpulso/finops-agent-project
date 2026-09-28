@@ -230,14 +230,14 @@ st.caption("Agente para costos GCP/Azure y consultas de tags")
 # ==========================================================
 # CENTRO DE MANDO: PESTAÑAS FINOPS PRINCIPALES
 # ==========================================================
-tab_chat, tab_gcp, tab_azure, tab_powerbi, tab_tags, tab_pildoras, tab_aws = st.tabs([
+tab_chat, tab_gcp, tab_azure, tab_aws, tab_powerbi, tab_tags, tab_pildoras = st.tabs([
     "💬 Chat FinOps",
     "☁️ GCP (BigQuery)",
     "🔷 Azure (Cost)",
+    "🟧 AWS Cloud",
     "📊 Power BI",
     "🏷️ Auditoría Tags",
-    "💡 Píldoras FinOps",
-    "🟧 AWS Cloud"
+    "💡 Píldoras FinOps"
 ])
 
 
@@ -1780,5 +1780,4 @@ chat_files = list(chat_value.files) if chat_value else []
 prompt = voice_prompt or chat_prompt or pending_prompt
 if prompt or chat_files:
     process_chat_prompt(prompt or "", source="voice" if voice_prompt else "chat", files=chat_files)
-
 
