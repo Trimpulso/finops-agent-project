@@ -48,3 +48,39 @@ Prioridades de optimización:
 2. Rightsizing de VMs subutilizadas (ahorro 30-40%)
 3. Reserved Instances / Committed Use para cargas estables (ahorro 40-60%)
 4. Optimización de almacenamiento (tiers más baratos)
+
+==================================================
+PÍLDORA FINOPS: TAGGING Y CHARGEBACK (CAPÍTULO 3)
+==================================================
+Concepto:
+La falta de etiquetas (tags) dificulta la previsibilidad e impide saber qué producto o área consume el presupuesto.
+
+Los 5 Mandamientos del Tagging (Etiquetas Mínimas Obligatorias):
+1. Business Unit: Unidad matriz responsable (Ej: IT TRANSFORMATION).
+2. Business Area: Área funcional concreta (Ej: IT OPERATIONS).
+3. AC (Analítica Contable): Código de imputación contable directo (EMPRESA/DELEGACIÓN/DIVISIÓN/CECO).
+4. App ID: Código único del inventario corporativo (Ej: AP0000).
+5. App Name: Nombre funcional legible de la aplicación (Ej: FINOPS).
+
+Objetivos FinOps:
+- Evitar el "pozo común" e injusticias presupuestarias.
+- Lograr el 100% de Gasto Atribuido mediante Showback y Chargeback.
+- Contacto: IT.INFRA.WW.FINOPS@prosegur.com
+
+==================================================
+PÍLDORA FINOPS: TAGGING Y CHARGEBACK (CAPÍTULO 3)
+==================================================
+Concepto:
+La falta de etiquetas (tags) dificulta la previsibilidad e impide saber qué producto o área consume el presupuesto.
+
+Los 5 Mandamientos del Tagging (Etiquetas Mínimas Obligatorias):
+1. Business Unit: Unidad matriz responsable (Ej: IT TRANSFORMATION).
+2. Business Area: Área funcional concreta (Ej: IT OPERATIONS).
+3. AC (Analítica Contable): Código de imputación contable directo (EMPRESA/DELEGACIÓN/DIVISIÓN/CECO).
+4. App ID: Código único del inventario corporativo (Ej: AP0000).
+5. App Name: Nombre funcional legible de la aplicación (Ej: FINOPS).
+
+Objetivos FinOps:
+- Evitar el "pozo común" e injusticias presupuestarias.
+- Lograr el 100% de Gasto Atribuido mediante Showback y Chargeback.
+- Contacto: IT.INFRA.WW.FINOPS@prosegur.com
