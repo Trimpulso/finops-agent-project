@@ -17,5 +17,5 @@ ENV STREAMLIT_SERVER_HEADLESS=true
 
 HEALTHCHECK CMD curl --fail http://localhost:8080/_stcore/health
 
-CMD ["streamlit", "run", "app.py", "--server.port=8080", "--server.address=0.0.0.0"]
+CMD ["sh", "-c", "streamlit run app.py --server.port=${PORT:-8080} --server.address=0.0.0.0 --server.headless=true"]
 

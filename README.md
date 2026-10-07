@@ -1,62 +1,68 @@
 # FinOps Chat Agent
 
-Agente FinOps en Streamlit para consultar costos y gobernanza multicloud.
+Agente FinOps desplegado en **Google Cloud Platform (GCP)** para consultar costos y gobernanza multicloud (GCP, Azure, AWS y Power BI).
 
-## Capacidades actuales
+## Arquitectura en GCP
 
-- GCP de prueba: costos desde BigQuery Billing Export y revision de labels obligatorios en recursos facturados.
-- Azure de prueba: Cost Management API y Azure Resource Graph para costos y tags.
-- Power BI Prosegur: inventario de reportes, paginas, datasets y playbooks DAX guiados.
-- Pildoras FinOps: base de conocimiento local en `web_app/knowledge_base.txt`.
-- Email: envio SMTP de respuestas del chat si se configuran credenciales Gmail.
-- Voz: entrada por microfono en el navegador usando Web Speech API.
-- Futuro: AWS Cost Explorer o CUR/Athena para analisis de costos AWS.
+- **Cloud Run:** Servicio contenedorizado `finops-agent-webapp` que ejecuta la interfaz y lógica en Streamlit.
+- **Secret Manager:** Almacenamiento seguro y centralizado de todas las credenciales y claves API.
+- **BigQuery:** Consultas directas sobre el dataset de facturación exportada de GCP.
+- **Cloud Functions (Gen 2):** Funciones auxiliares para consultas programadas y métricas de gasto diario.
 
-## Ejecucion local
+## Gestión de Credenciales y Secretos (Secret Manager)
 
-```powershell
-cd D:\Github\finops-agent-project
-.\.venv\Scripts\python.exe -m streamlit run .\web_app\app.py
+La aplicación obtiene automáticamente todas las claves desde **Google Cloud Secret Manager** en el proyecto `project-5f47ed36-9aec-4f46-a30` sin requerir archivos locales de credenciales.
+
+Secretos requeridos en GCP Secret Manager:
+- **Gemini AI:** `gemini-api-key`
+- **Azure:** `azure-tenant-id`, `azure-client-id`, `azure-client-secret`, `azure-subscription-id`
+- **Power BI:** `powerbi-tenant-id`, `powerbi-client-id`, `powerbi-client-secret`, `powerbi-workspace-id`
+- **Gmail SMTP:** `gmail-address`, `gmail-app-password`
+- **AWS:** `aws-access-key-id`, `aws-secret-access-key`, `aws-default-region`
+
+## Despliegue en Cloud Run
+
+Para compilar y desplegar el servicio en GCP Cloud Run:
+
+```bash
+gcloud run deploy finops-agent-webapp \
+  --project=project-5f47ed36-9aec-4f46-a30 \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated
 ```
 
-## Credenciales locales
+### Permisos de la Cuenta de Servicio en Cloud Run
+Asegurar que la cuenta de servicio asociada tenga el rol para leer Secret Manager:
 
-Durante la etapa de pruebas se pueden usar variables de entorno, `.env` o `web_app/.streamlit/secrets.toml`.
-No subir credenciales al repositorio. Usa `.env.example` como plantilla.
-
-Variables requeridas segun capacidad:
-
-- `GEMINI_API_KEY`
-- `AZURE_TENANT_ID`
-- `AZURE_CLIENT_ID`
-- `AZURE_CLIENT_SECRET`
-- `AZURE_SUBSCRIPTION_ID`
-- `POWERBI_TENANT_ID`
-- `POWERBI_CLIENT_ID`
-- `POWERBI_CLIENT_SECRET`
-- `POWERBI_WORKSPACE_ID`
-- `GMAIL_ADDRESS`
-- `GMAIL_APP_PASSWORD`
-
-## Despliegue Cloud Run
-
-Servicio unico recomendado:
-
-- `finops-agent-webapp`
-
-```powershell
-cd D:\Github\finops-agent-project
-gcloud run deploy finops-agent-webapp --source . --region us-central1 --allow-unauthenticated
+```bash
+gcloud projects add-iam-policy-binding project-5f47ed36-9aec-4f46-a30 \
+  --member="serviceAccount:TU_SERVICE_ACCOUNT@project-5f47ed36-9aec-4f46-a30.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
 ```
 
-## Cloud Functions GCP
+## Despliegue de Cloud Functions
 
-Las funciones auxiliares se despliegan desde:
+Las funciones auxiliares se despliegan con:
 
-- `cloud_functions/get_daily_spend_function`
-- `cloud_functions/list_projects_function`
+```bash
+gcloud functions deploy get-daily-spend \
+  --project=project-5f47ed36-9aec-4f46-a30 \
+  --gen2 \
+  --runtime=python312 \
+  --region=us-central1 \
+  --source=./cloud_functions/get_daily_spend_function \
+  --entry-point=get_daily_spend \
+  --trigger-http \
+  --allow-unauthenticated
 
-```powershell
-gcloud functions deploy get-daily-spend --gen2 --runtime=python312 --region=us-central1 --source=.\cloud_functions\get_daily_spend_function --entry-point=get_daily_spend --trigger-http --allow-unauthenticated
-gcloud functions deploy list-projects --gen2 --runtime=python312 --region=us-central1 --source=.\cloud_functions\list_projects_function --entry-point=list_projects --trigger-http --allow-unauthenticated
+gcloud functions deploy list-projects \
+  --project=project-5f47ed36-9aec-4f46-a30 \
+  --gen2 \
+  --runtime=python312 \
+  --region=us-central1 \
+  --source=./cloud_functions/list_projects_function \
+  --entry-point=list_projects \
+  --trigger-http \
+  --allow-unauthenticated
 ```
