@@ -66,4 +66,3 @@ gcloud functions deploy list-projects \
   --trigger-http \
   --allow-unauthenticated
 ```
-# TimesFM
