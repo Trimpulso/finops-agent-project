@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-
+from timesfm_client import obtener_prediccion_costos
 try:
     import boto3
 except ImportError:
@@ -669,3 +669,21 @@ chat_files = list(chat_value.files) if chat_value else []
 prompt = chat_prompt or pending_prompt
 if prompt or chat_files:
     process_chat_prompt(prompt or "", source="chat", files=chat_files)
+# Ejemplo para agregar un botón o consulta de pronóstico en la interfaz de Streamlit
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("🔮 Proyección IA (TimesFM 2.5)")
+    if st.button("Generar Pronóstico Trimestral"):
+        with st.spinner("Consultando modelo fundacional TimesFM..."):
+            # Datos históricos de ejemplo o extraídos de BigQuery
+            fechas_ejemplo = ["2026-08-01", "2026-09-01", "2026-10-01"]
+            valores_ejemplo = [1520.50, 1610.20, 1580.80]
+            
+            proyeccion = obtener_prediccion_costos(fechas_ejemplo, valores_ejemplo, horizonte=3)
+            
+            if proyeccion:
+                st.success("¡Proyección generada con éxito!")
+                for i, costo in enumerate(proyeccion, start=1):
+                    st.metric(label=f"Mes +{i} Estimado", value=f"${costo:,.2f} USD")
+            else:
+                st.error("No se pudo conectar con el servicio de TimesFM.")    
