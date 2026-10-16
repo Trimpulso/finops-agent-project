@@ -1,25 +1,19 @@
 import os
 import requests
 
-# URL pública de tu API de TimesFM activa en el puerto 8000
-TIMESFM_API_URL = os.getenv("TIMESFM_API_URL", "https://crispy-space-funicular-69rxj49x5wghw6r-8000.app.github.dev/api/v1/forecast")
-
-def obtener_prediccion_costos(fechas: list[str], valores: list[float], horizonte: int = 3):
-    """
-    Envía los datos de costos históricos al modelo fundacional TimesFM 2.5
-    para proyectar el gasto futuro de la infraestructura multicloud.
-    """
+def obtener_prediccion_costos(data_historica: list, horizon: int = 12):
+    url = os.getenv("TIMESFM_API_URL", "https://scaling-yodel-9pv4w6jq5v62p977-8000.app.github.dev/api/v1/forecast")
     payload = {
-        "fechas": fechas,
-        "valores": valores,
-        "horizonte": horizonte
+        "data": data_historica,
+        "horizon": horizon
     }
-    
     try:
-        response = requests.post(TIMESFM_API_URL, json=payload, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("prediccion")
-    except requests.exceptions.RequestException as e:
-        print(f"Error al conectar con la API de TimesFM: {e}")
-        return None
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            res_json = response.json()
+            return res_json.get("forecast", [])
+        else:
+            return []
+    except Exception as e:
+        print(f"Error conectando con TimesFM API: {e}")
+        return []
